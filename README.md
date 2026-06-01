@@ -3,6 +3,7 @@
 # mpv
 
 
+* [About this fork](#about-this-fork)
 * [External links](#external-links)
 * [Overview](#overview)
 * [System requirements](#system-requirements)
@@ -14,6 +15,65 @@
 * [Contributing](#contributing)
 * [License](#license)
 * [Contact](#contact)
+
+
+## About this fork
+
+
+This is a personal fork of [mpv](https://github.com/mpv-player/mpv) that adds
+**high-frame-rate rendering of animated ASS/SSA subtitles**. It is not intended
+to be merged upstream; it is kept in sync with upstream `master` and these
+changes are rebased/re-applied on top.
+
+### What it adds
+
+Upstream mpv rasterizes subtitles once per video frame, using the video frame's
+timestamp. Animated ASS subtitles (`\move`, `\t`, `\fad`, karaoke, ...) therefore
+only update at the video's frame rate, which looks choppy with low-fps video
+(e.g. 24 fps anime) on a high refresh rate display.
+
+This fork adds the `--sub-animation-fps` option, which re-renders animated ASS
+subtitles *between* video frames so that the animation advances at the display
+refresh rate (or a chosen rate) instead of the video frame rate:
+
+```text
+--sub-animation-fps=no        # disabled (default; upstream behavior)
+--sub-animation-fps=display   # re-render at the display refresh rate
+--sub-animation-fps=60        # re-render at the given fps (capped at display fps)
+```
+
+The extra rendering only runs while an animated subtitle event is actually on
+screen, so static dialogue is unaffected. It applies to ASS/SSA only (image and
+plain-text subtitles have no in-event animation), and has no effect with
+`--blend-subtitles=video`. See `--sub-animation-fps` in the manual for details.
+
+### How it works
+
+* A wall-clock anchor (pts + time of the last shown frame) is recorded per frame
+  and used to interpolate the current subtitle pts between video frames
+  (`player/video.c`, `player/core.h`).
+* `libass`-rendered events are tagged as animated or not, exposed via
+  `SD_CTRL_SUB_ANIMATED` / `sub_is_animated()` (`sub/sd_ass.c`, `sub/dec_sub.*`).
+* When an animated subtitle is visible, the playloop drives extra OSD redraws at
+  the chosen fps via the existing `force_video_pts` mechanism, re-arming its own
+  wakeup so the cadence survives video filters such as `decimate`/inverse
+  telecine that buffer frames; the interpolation is clamped to the real
+  inter-frame gap (`past_frames[0].duration`) so it stays correct under IVTC
+  (`player/playloop.c`).
+* The video output throttles actual redraws to at most the display refresh rate.
+
+### Files changed vs upstream
+
+`options/options.{c,h}`, `sub/sd_ass.c`, `sub/dec_sub.{c,h}`, `player/core.h`,
+`player/video.c`, `player/playloop.c`, `DOCS/man/options.rst`.
+
+### Syncing with upstream
+
+```sh
+git remote add upstream https://github.com/mpv-player/mpv.git   # once
+git fetch upstream
+git rebase upstream/master      # re-apply the fork commits on top
+```
 
 
 ## External links

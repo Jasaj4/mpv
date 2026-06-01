@@ -189,6 +189,13 @@ void set_pause_state(struct MPContext *mpctx, bool user_pause)
             mpctx->time_frame -= get_relative_time(mpctx);
         } else {
             (void)get_relative_time(mpctx); // ignore time that passed during pause
+            // Re-anchor smooth subtitle interpolation, so resuming doesn't
+            // briefly extrapolate the subtitle into the future by the pause
+            // duration (--sub-animation-fps). Restart catch-up detection too.
+            mpctx->smooth_sub_anchor_pts = mpctx->video_pts;
+            mpctx->smooth_sub_anchor_time = mp_time_sec();
+            mpctx->smooth_sub_prev_anchor_pts = MP_NOPTS_VALUE;
+            mpctx->smooth_sub_catching_up = false;
         }
     }
 
@@ -671,9 +678,98 @@ void update_ab_loop_clip(struct MPContext *mpctx)
                           pts * mpctx->play_dir <= ab[1] * mpctx->play_dir;
 }
 
+// With --sub-animation-fps, re-render animated ASS subtitles between video
+// frames so that \move/\t/\fad/karaoke animations advance at the display (or a
+// chosen) fps instead of the video fps. Returns true if a redraw was issued.
+static bool handle_smooth_subs(struct MPContext *mpctx)
+{
+    int target = mpctx->opts->subs_rend->sub_animation_fps;
+    if (target == 0 || mpctx->video_status != STATUS_PLAYING ||
+        !mpctx->vo_chain || mpctx->vo_chain->is_sparse ||
+        mpctx->smooth_sub_anchor_pts == MP_NOPTS_VALUE)
+        return false;
+
+    // Detect a speed-change catch-up transient. When the displayed video
+    // advances much faster than the intended playback speed -- e.g. just after
+    // slowing down, while audio produced at the old (faster) speed is still
+    // draining from the output buffer and dragging the master clock along --
+    // suspend smoothing. Interpolating here would render a jarring, smoothly
+    // fast-sliding subtitle; plain per-frame rendering instead tracks the
+    // (briefly fast) video without the slide, matching mpv without this option.
+    if (mpctx->smooth_sub_anchor_pts != mpctx->smooth_sub_prev_anchor_pts) {
+        double dpts = mpctx->smooth_sub_anchor_pts -
+                      mpctx->smooth_sub_prev_anchor_pts;
+        double dtime = mpctx->smooth_sub_anchor_time -
+                       mpctx->smooth_sub_prev_anchor_time;
+        double intended = fabs(mpctx->video_speed);
+        if (mpctx->smooth_sub_prev_anchor_pts != MP_NOPTS_VALUE &&
+            dtime > 0 && intended > 0)
+        {
+            // Media seconds of displayed video per wall-clock second. About
+            // equal to the playback speed normally; far higher while catching
+            // up. The 2x margin absorbs vsync-rounding jitter.
+            double rate = fabs(dpts) / dtime;
+            mpctx->smooth_sub_catching_up = rate > intended * 2.0;
+        }
+        mpctx->smooth_sub_prev_anchor_pts = mpctx->smooth_sub_anchor_pts;
+        mpctx->smooth_sub_prev_anchor_time = mpctx->smooth_sub_anchor_time;
+    }
+    if (mpctx->smooth_sub_catching_up) {
+        // Render the next real frame at its own pts, not a stale forced one.
+        osd_set_force_video_pts(mpctx->osd, MP_NOPTS_VALUE);
+        return false;
+    }
+
+    // Only do the extra redraws while an animated subtitle is actually on
+    // screen; a static subtitle would just waste a full redraw per frame.
+    bool animated = false;
+    for (int n = 0; n < num_ptracks[STREAM_SUB]; n++) {
+        struct track *t = mpctx->current_track[n][STREAM_SUB];
+        if (t && t->d_sub && sub_is_animated(t->d_sub)) {
+            animated = true;
+            break;
+        }
+    }
+    if (!animated)
+        return false;
+
+    double fps = target > 0 ? target : vo_get_display_fps(mpctx->video_out);
+    if (fps <= 0)
+        fps = 60;
+
+    // Interpolate the current position from the last shown video frame. Clamp
+    // to the real gap until the next frame, measured from frame PTS deltas
+    // (past_frames[0].duration). This stays correct even when a filter such as
+    // decimate (inverse telecine, e.g. 30->24 fps for anime) changes the frame
+    // cadence, where the source packet duration would be misleading. The next
+    // real frame re-anchors this; the clamp only bounds a stalled decoder.
+    double frame_dur = mpctx->num_past_frames >= 1 ?
+                       mpctx->past_frames[0].duration : 0;
+    if (frame_dur <= 0)
+        frame_dur = 0.1; // fallback: avoid freezing if the gap is unknown
+    double media_elapsed = (mp_time_sec() - mpctx->smooth_sub_anchor_time) *
+                           mpctx->video_speed;
+    media_elapsed = MPCLAMP(media_elapsed, 0, frame_dur);
+    double pts = mpctx->smooth_sub_anchor_pts + media_elapsed;
+    osd_set_force_video_pts(mpctx->osd, pts);
+    osd_query_and_reset_want_redraw(mpctx->osd);
+    vo_redraw(mpctx->video_out);
+
+    // Keep waking up to re-render between video frames. The VO itself throttles
+    // actual redraws to at most display fps.
+    mp_set_timeout(mpctx, 1.0 / fps);
+    return true;
+}
+
 static void handle_osd_redraw(struct MPContext *mpctx)
 {
     if (!mpctx->video_out || !mpctx->video_out->config_ok || (mpctx->playing && mpctx->stop_play))
+        return;
+    // Drive smooth subtitle re-rendering. This must run independently of
+    // sleeptime: it re-arms its own wakeup, so the redraw cadence is kept even
+    // when a video filter (e.g. decimate/IVTC) buffers frames and thus doesn't
+    // schedule near-future frame wakeups that would otherwise keep us awake.
+    if (handle_smooth_subs(mpctx))
         return;
     // If we're playing normally, let OSD be redrawn naturally as part of
     // video display.

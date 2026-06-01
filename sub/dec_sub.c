@@ -565,6 +565,16 @@ void sub_set_play_dir(struct dec_sub *sub, int dir)
     mp_mutex_unlock(&sub->lock);
 }
 
+bool sub_is_animated(struct dec_sub *sub)
+{
+    mp_mutex_lock(&sub->lock);
+    bool animated = false;
+    if (sub->sd->driver->control)
+        sub->sd->driver->control(sub->sd, SD_CTRL_SUB_ANIMATED, &animated);
+    mp_mutex_unlock(&sub->lock);
+    return animated;
+}
+
 bool sub_is_primary_visible(struct dec_sub *sub)
 {
     mp_mutex_lock(&sub->lock);

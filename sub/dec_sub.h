@@ -17,6 +17,7 @@ struct sd;
 enum sd_ctrl {
     SD_CTRL_SUB_STEP,
     SD_CTRL_SET_ANIMATED_CHECK,
+    SD_CTRL_SUB_ANIMATED,
     SD_CTRL_SET_VIDEO_PARAMS,
     SD_CTRL_SET_VIDEO_DEF_FPS,
     SD_CTRL_RESET_SOFT,
@@ -73,6 +74,10 @@ void sub_set_recorder_sink(struct dec_sub *sub, struct mp_recorder_sink *sink);
 void sub_set_play_dir(struct dec_sub *sub, int dir);
 bool sub_is_primary_visible(struct dec_sub *sub);
 bool sub_is_secondary_visible(struct dec_sub *sub);
+// Whether the subtitle drawn at the most recently rendered pts is animated
+// (uses \move, \t, \fad, karaoke, or an effect), and thus benefits from being
+// re-rendered between video frames. Only meaningful for ASS subtitles.
+bool sub_is_animated(struct dec_sub *sub);
 
 int sub_control(struct dec_sub *sub, enum sd_ctrl cmd, void *arg);
 

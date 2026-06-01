@@ -63,6 +63,9 @@ struct sd_ass_priv {
     int *packets_animated;
     int num_packets_animated;
     bool check_animated;
+    // Whether the event(s) visible at the last rendered timestamp animate.
+    // Used by --sub-animation-fps to re-render between video frames.
+    bool animated;
 };
 
 struct seen_packet {
@@ -740,6 +743,8 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
     struct mp_osd_res old_osd = ctx->osd;
     ctx->osd = dim;
 
+    ctx->animated = false;
+
     if (pts == MP_NOPTS_VALUE || !renderer)
         goto done;
 
@@ -780,6 +785,21 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
     int changed;
     ASS_Image *imgs = ass_render_frame(renderer, track, ts, &changed);
     mp_sub_packer_pack_ass(ctx->packer, &imgs, 1, changed, !converted, format, res);
+
+    // Detect whether a visible event animates, so the player can re-render it
+    // between video frames (--sub-animation-fps). Restricted to real ASS subs;
+    // converted/style-stripped tracks carry no animation tags.
+    if (opts->sub_animation_fps && !converted && !no_ass) {
+        for (int i = 0; i < track->n_events; i++) {
+            ASS_Event *ev = &track->events[i];
+            if (ts >= ev->Start && ts < ev->Start + ev->Duration &&
+                ((ev->Effect && ev->Effect[0]) || is_animated(ev->Text)))
+            {
+                ctx->animated = true;
+                break;
+            }
+        }
+    }
 
 done:
     // mangle_colors() modifies the color field, so copy the thing _before_.
@@ -1071,6 +1091,9 @@ static int control(struct sd *sd, enum sd_ctrl cmd, void *arg)
     }
     case SD_CTRL_SET_ANIMATED_CHECK:
         ctx->check_animated = *(bool *)arg;
+        return CONTROL_OK;
+    case SD_CTRL_SUB_ANIMATED:
+        *(bool *)arg = ctx->animated;
         return CONTROL_OK;
     case SD_CTRL_RESET_SOFT:
         ctx->clear_once = true;

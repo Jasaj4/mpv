@@ -2589,6 +2589,29 @@ Subtitles
         ``--sub-speed=25/23.976`` plays frame based subtitles which have been
         loaded assuming a framerate of 23.976 at 25 FPS.
 
+``--sub-animation-fps=<no|display|1-1000>``
+    Re-render animated ASS subtitles between video frames so that animations
+    (``\move``, ``\t``, ``\fad``, karaoke, ...) advance smoothly instead of
+    only updating once per video frame. This is most noticeable with low frame
+    rate video (e.g. 24 FPS) shown on a high refresh rate display, where moving
+    signs and karaoke otherwise look choppy.
+
+    :no:      Disabled. Subtitles are rendered at the video frame rate
+              (default).
+    :display: Re-render at the display refresh rate.
+    :1-1000:  Re-render at the given frame rate (effectively capped at the
+              display refresh rate).
+
+    The extra rendering only happens while an animated subtitle event is on
+    screen, so static dialogue is unaffected. Note that this increases CPU
+    (libass re-rasterization) and GPU (subtitle texture upload) usage while
+    animated subtitles are visible.
+
+    This only affects ASS/SSA subtitles; image based subtitles (e.g. PGS,
+    VobSub) and plain text formats have no in-event animation. It also has no
+    effect when subtitles are blended into the video before scaling
+    (``--blend-subtitles=video``).
+
 ``--sub-ass-style-overrides=<[Style.]Param=Value[,...]>``
     Override some style or script info parameters.
 

@@ -378,6 +378,17 @@ typedef struct MPContext {
     /* timestamp of video frame currently visible on screen
      * (or at least queued to be flipped by VO) */
     double video_pts;
+    // For --sub-animation-fps: pts and wall-clock time of the most recently
+    // shown video frame, used to interpolate the subtitle pts between video
+    // frames so animated subtitles can be re-rendered at display fps.
+    double smooth_sub_anchor_pts;
+    double smooth_sub_anchor_time;
+    // Previous anchor, used to measure how fast the displayed video advances so
+    // smoothing can be suspended during a speed-change catch-up (see
+    // handle_smooth_subs()).
+    double smooth_sub_prev_anchor_pts;
+    double smooth_sub_prev_anchor_time;
+    bool smooth_sub_catching_up;
     // Last seek target.
     double last_seek_pts;
     // Frame duration field from demuxer. Only used for duration of the last

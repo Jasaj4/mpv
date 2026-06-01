@@ -112,6 +112,9 @@ void reset_video_state(struct MPContext *mpctx)
     mpctx->delay = 0;
     mpctx->time_frame = 0;
     mpctx->video_pts = MP_NOPTS_VALUE;
+    mpctx->smooth_sub_anchor_pts = MP_NOPTS_VALUE;
+    mpctx->smooth_sub_prev_anchor_pts = MP_NOPTS_VALUE;
+    mpctx->smooth_sub_catching_up = false;
     mpctx->last_frame_duration = 0;
     mpctx->num_past_frames = 0;
     mpctx->total_avsync_change = 0;
@@ -1246,6 +1249,8 @@ void write_video(struct MPContext *mpctx)
     }
 
     mpctx->video_pts = mpctx->next_frames[0]->pts;
+    mpctx->smooth_sub_anchor_pts = mpctx->next_frames[0]->pts;
+    mpctx->smooth_sub_anchor_time = mp_time_sec();
     mpctx->last_frame_duration =
         mpctx->next_frames[0]->pkt_duration / mpctx->video_speed;
 
