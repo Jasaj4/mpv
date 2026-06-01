@@ -19,12 +19,13 @@ except CalledProcessError:
     describe_cmd += ["--always"]
     ver = check_output(describe_cmd, stderr=DEVNULL, encoding="UTF-8")
     ver = f"v{sys.argv[3]}-dev-g{ver}"
-sys.stdout.write(ver)
+# Fork marker (asssub: high-fps ASS subtitle rendering). SemVer build metadata.
+sys.stdout.write(ver.strip() + "+asssub")
 '''
 
 version_h = vcs_tag(
     command: [python, '-c', generate_ver, git, source_root, meson.project_version().replace('-UNKNOWN', '')],
-    fallback: 'v' + meson.project_version(),
+    fallback: 'v' + meson.project_version() + '+asssub',
     input: 'version.h.in',
     output: 'version.h',
     replace_string: '@VERSION@',
