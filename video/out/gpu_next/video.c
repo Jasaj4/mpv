@@ -1647,6 +1647,12 @@ bool mppl_video_render_frame(struct mppl_video *p, struct vo_frame *frame,
             target.color.transfer = PL_COLOR_TRC_SRGB;
 #endif
     }
+    // Each draw of a frame stands for another moment of the video, the
+    // subtitle animations are rendered at it (--sub-animation-fps).
+    if (p->osd && frame->current) {
+        osd_set_sub_anim_pts(p->osd, frame->current->pts,
+                             frame->current->pts + frame->sub_anim_offset);
+    }
     stats_time_start(p->stats, "osd-update");
     update_overlays(p, p->osd_res,
                     (frame->current && opts->blend_subs) ? OSD_DRAW_OSD_ONLY : 0,

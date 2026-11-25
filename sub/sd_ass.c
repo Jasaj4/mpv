@@ -61,6 +61,13 @@ struct sd_ass_priv {
     struct seen_packet *seen_packets;
     int num_seen_packets;
     bool check_animated;
+    struct moved_event *moved_events; // scratch memory of render_frame()
+};
+
+// An event which has its start moved for the duration of a render.
+struct moved_event {
+    int index;
+    long long start;
 };
 
 struct seen_packet {
@@ -735,6 +742,68 @@ static long long find_timestamp(struct sd *sd, double pts)
 
 #undef END
 
+// Render the events that are shown at ts, the way they look at anim_ts
+// (--sub-animation-fps). libass takes a single time for both: it draws the
+// events which that time is within, and animates each by the time since its
+// start. So the frame is rendered at anim_ts, and the events that ts and
+// anim_ts disagree about have their start moved for the call. One that is
+// shown at ts, but over or not started at anim_ts, is drawn in its last or
+// its first moment. One that starts between ts and anim_ts is not drawn.
+// What is drawn is exactly what is shown at ts, so every event appears and
+// disappears with the video frame it was timed to, and collisions between
+// the events are resolved as always.
+static ASS_Image *render_frame(struct sd *sd, ASS_Track *track,
+                               long long ts, long long anim_ts, int *changed)
+{
+    struct sd_ass_priv *ctx = sd->priv;
+
+    if (anim_ts == ts)
+        return ass_render_frame(ctx->ass_renderer, track, ts, changed);
+
+    // libass discards old events at the end of a render if it is set up to,
+    // which moves the other ones around. That has to wait until the events
+    // are back in place.
+#if LIBASS_VERSION >= 0x01703010
+    long long prune_delay = sd->opts->ass_prune_delay * 1000.0;
+    if (prune_delay >= 0)
+        ass_configure_prune(track, -1);
+#endif
+
+    int num_moved = 0;
+    for (int n = 0; n < track->n_events; n++) {
+        ASS_Event *ev = &track->events[n];
+        long long end = ev->Start + ev->Duration;
+        bool shown = ev->Start <= ts && ts < end;
+        bool shown_anim = ev->Start <= anim_ts && anim_ts < end;
+        if (shown == shown_anim)
+            continue;
+        MP_TARRAY_GROW(ctx, ctx->moved_events, num_moved);
+        ctx->moved_events[num_moved++] = (struct moved_event){n, ev->Start};
+        if (!shown) {
+            ev->Start = anim_ts + 1;
+        } else if (anim_ts < ev->Start) {
+            ev->Start = anim_ts;
+        } else {
+            ev->Start = anim_ts - ev->Duration + 1;
+        }
+    }
+
+    ASS_Image *imgs = ass_render_frame(ctx->ass_renderer, track, anim_ts, changed);
+
+    for (int n = 0; n < num_moved; n++)
+        track->events[ctx->moved_events[n].index].Start = ctx->moved_events[n].start;
+
+#if LIBASS_VERSION >= 0x01703010
+    // An event that is over at anim_ts can still be one that is shown.
+    if (prune_delay >= 0) {
+        ass_configure_prune(track, prune_delay);
+        ass_prune_events(track, ts - prune_delay);
+    }
+#endif
+
+    return imgs;
+}
+
 static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
                                        int format, double pts)
 {
@@ -786,11 +855,18 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
     }
     long long ts = find_timestamp(sd, pts);
 
+    // Only events of an ASS script are animated. A time far from the pts is
+    // not a moment of the same frame.
+    long long anim_ts = ts;
+    if (!converted && sd->anim_pts != pts && sd->anim_pts != MP_NOPTS_VALUE &&
+        fabs(sd->anim_pts - pts) <= 1)
+        anim_ts = floor(sd->anim_pts * 1000 + 1e-6);
+
     if (no_ass)
         fill_plaintext(sd, pts);
 
     int changed;
-    ASS_Image *imgs = ass_render_frame(renderer, track, ts, &changed);
+    ASS_Image *imgs = render_frame(sd, track, ts, anim_ts, &changed);
     mp_sub_packer_pack_ass(ctx->packer, &imgs, 1, changed, !converted, format, res);
 
 done:

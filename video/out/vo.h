@@ -246,6 +246,12 @@ struct vo_frame {
     double ideal_frame_vsync;
     // "ideal" frame duration relative to the pts
     double ideal_frame_vsync_duration;
+    // Where on the timeline of the video this draw of the frame is, as an
+    // offset in seconds to current->pts. A display synced frame is drawn on
+    // several vsyncs, or half a vsync away from its own time, and each of
+    // those draws stands for another moment. Subtitle animations are rendered
+    // at it (--sub-animation-fps). 0 if the frame is drawn for its own time.
+    double sub_anim_offset;
     // how often the frame will be repeated (does not include OSD redraws)
     int num_vsyncs;
     // Set if the current frame is repeated from the previous. It's guaranteed

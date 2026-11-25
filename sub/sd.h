@@ -34,6 +34,11 @@ struct sd {
     // Set to false as soon as the decoder discards old subtitle events.
     // (only needed if sd_functions.accept_packets_in_advance == false)
     bool preload_ok;
+
+    // Set before each get_bitmaps() call: the time to render the animations
+    // of the subtitles at, which are the ones shown at the pts of the call.
+    // The same as that pts, unless --sub-animation-fps is in use.
+    double anim_pts;
 };
 
 struct sd_functions {

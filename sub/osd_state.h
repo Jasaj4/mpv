@@ -74,6 +74,8 @@ struct osd_state {
 
     bool render_subs_in_filter;
     _Atomic double force_video_pts;
+    // Set by osd_set_sub_anim_pts().
+    double sub_anim_video_pts, sub_anim_pts;
 
     bool want_redraw;
     bool want_redraw_notification;

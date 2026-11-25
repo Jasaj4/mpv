@@ -200,6 +200,8 @@ static const m_option_t mp_vo_opt_list[] = {
         {"display-vdrop", VS_DISP_VDROP},
         {"display-desync", VS_DISP_NONE},
         {"desync", VS_NONE})},
+    {"sub-animation-fps", OPT_CHOICE(sub_animation_fps,
+        {"no", 0}, {"display", -1}), M_RANGE(1, 1000)},
 #if HAVE_X11
     {"x11-netwm", OPT_CHOICE(x11_netwm, {"auto", 0}, {"no", -1}, {"yes", 1})},
     {"x11-bypass-compositor", OPT_CHOICE(x11_bypass_compositor,

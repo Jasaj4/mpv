@@ -165,6 +165,7 @@ struct osd_state *osd_create(struct mpv_global *global)
         .global = global,
         .log = mp_log_new(osd, global->log, "osd"),
         .force_video_pts = MP_NOPTS_VALUE,
+        .sub_anim_video_pts = MP_NOPTS_VALUE,
         .stats = stats_ctx_create(osd, global, "osd"),
     };
     mp_mutex_init(&osd->lock);
@@ -258,6 +259,19 @@ double osd_get_force_video_pts(struct osd_state *osd)
     return atomic_load(&osd->force_video_pts);
 }
 
+// For --sub-animation-fps: when the VO draws the frame with the given
+// video_pts onto the screen, the subtitles shown are still the ones of
+// video_pts, but their animations are rendered at anim_pts. The VO draws a
+// frame several times, each time for a slightly later moment, and calls this
+// before each of them.
+void osd_set_sub_anim_pts(struct osd_state *osd, double video_pts, double anim_pts)
+{
+    mp_mutex_lock(&osd->lock);
+    osd->sub_anim_video_pts = video_pts;
+    osd->sub_anim_pts = anim_pts;
+    mp_mutex_unlock(&osd->lock);
+}
+
 void osd_set_progbar(struct osd_state *osd, struct osd_progbar_state *s)
 {
     mp_mutex_lock(&osd->lock);
@@ -317,6 +331,7 @@ void osd_resize(struct osd_state *osd, struct mp_osd_res res)
 static struct sub_bitmaps *render_object(struct osd_state *osd,
                                          struct osd_object *obj,
                                          struct mp_osd_res osdres, double video_pts,
+                                         double anim_pts,
                                          const bool sub_formats[SUBBITMAP_COUNT])
 {
     int format = SUBBITMAP_LIBASS;
@@ -329,10 +344,12 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
 
     if (obj->type == OSDTYPE_SUB) {
         if (obj->sub && sub_is_primary_visible(obj->sub))
-            res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
+            res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts,
+                                  anim_pts);
     } else if (obj->type == OSDTYPE_SUB2) {
         if (obj->sub && sub_is_secondary_visible(obj->sub))
-            res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
+            res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts,
+                                  anim_pts);
     } else if (obj->type == OSDTYPE_EXTERNAL2 ||
                obj->type == OSDTYPE_DISC_MENU) {
         if (obj->image_overlay && obj->image_overlay->format) {
@@ -376,8 +393,16 @@ struct sub_bitmap_list *osd_render(struct osd_state *osd, struct mp_osd_res res,
     list->h = res.h;
 
     double force_video_pts = atomic_load(&osd->force_video_pts);
+    // Only what the VO draws onto the screen for this very frame is animated
+    // at another time. Subtitles blended into the video, drawn by a filter or
+    // put on a screenshot of the video belong to the frame's own time.
+    double anim_pts = video_pts;
+    if (force_video_pts == MP_NOPTS_VALUE &&
+        video_pts == osd->sub_anim_video_pts &&
+        !(draw_flags & (OSD_DRAW_SUB_ONLY | OSD_DRAW_SUB_FILTER)))
+        anim_pts = osd->sub_anim_pts;
     if (force_video_pts != MP_NOPTS_VALUE)
-        video_pts = force_video_pts;
+        video_pts = anim_pts = force_video_pts;
 
     if (draw_flags & OSD_DRAW_SUB_FILTER)
         draw_flags |= OSD_DRAW_SUB_ONLY;
@@ -398,7 +423,7 @@ struct sub_bitmap_list *osd_render(struct osd_state *osd, struct mp_osd_res res,
         stats_time_start(osd->stats, stat_type_render);
 
         struct sub_bitmaps *imgs =
-            render_object(osd, obj, res, video_pts, formats);
+            render_object(osd, obj, res, video_pts, anim_pts, formats);
 
         stats_time_end(osd->stats, stat_type_render);
 

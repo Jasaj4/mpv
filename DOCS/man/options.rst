@@ -2654,6 +2654,42 @@ Subtitles
         ``--sub-speed=25/23.976`` plays frame based subtitles which have been
         loaded assuming a framerate of 23.976 at 25 FPS.
 
+``--sub-animation-fps=<no|display|1-1000>``
+    Render the animations of ASS subtitles (``\move``, ``\t``, ``\fad``,
+    karaoke, ...) for every refresh of the display, instead of once per video
+    frame. Without this, a subtitle that moves across the screen advances at
+    the frame rate of the video, which looks choppy with 24 or 30 FPS video
+    on a display that refreshes faster.
+
+    :no:      The subtitles are rendered for the time of the video frame
+              (default).
+    :display: The animations are rendered for every refresh of the display.
+    :1-1000:  The animations are rendered for at most this many moments per
+              second. A value at or above the refresh rate of the display is
+              the same as ``display``.
+
+    This requires a display synced ``--video-sync`` mode, like
+    ``display-resample``, the same as ``--interpolation`` does. In those modes
+    every video frame is put on the vsyncs of the display around its time, and
+    the player knows where between the video frames each of these vsyncs is.
+    The animations are rendered at that time. They advance by the same amount
+    on every vsync, at any playback speed, and stay on the video when frames
+    are dropped or repeated, or when a filter changes the frame rate.
+
+    Which subtitles are shown is still decided by the time of the video frame
+    alone, so every subtitle appears and disappears together with the video
+    frame it was timed to. Only the animation within a subtitle uses the finer
+    time.
+
+    Pausing keeps the subtitles as they were last drawn. A frame that is
+    stepped or seeked to while paused shows them for its own time.
+
+    This affects ASS/SSA subtitles drawn by ``--vo=gpu``, ``--vo=gpu-next`` and
+    the libmpv render API. Image based subtitles (e.g. PGS, VobSub) and plain
+    text formats have no animations. It has no effect on subtitles that are
+    blended into the video (``--blend-subtitles``), rendered by a video filter,
+    or put on screenshots of the video.
+
 ``--sub-ass-style-overrides=<[Style.]Param=Value[,...]>``
     Override some style or script info parameters.
 

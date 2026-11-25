@@ -199,6 +199,8 @@ struct vo_internal {
     enum vo_refresh_kind refresh_kind; // the backend's word on the display, from the last flip
     bool follows;                   // the display shows presents immediately, logged when it changes
 
+    bool sub_anim_warned;           // --sub-animation-fps without display sync
+
     struct vo_frame *current_frame; // last frame queued to the VO
 
     int64_t wakeup_pts;             // time at which to pull frame from decoder
@@ -269,6 +271,14 @@ static void read_opts(struct vo *vo)
     mp_mutex_lock(&in->lock);
     in->timing_offset = (uint64_t)(MP_TIME_S_TO_NS(vo->opts->timing_offset));
     mp_mutex_unlock(&in->lock);
+
+    // The frames are on the vsyncs of the display only with display sync.
+    bool no_sync = vo->opts->sub_animation_fps && !VS_IS_DISP(vo->opts->video_sync);
+    if (no_sync && !in->sub_anim_warned) {
+        MP_WARN(vo, "--sub-animation-fps has no effect without a display "
+                    "--video-sync mode like display-resample.\n");
+    }
+    in->sub_anim_warned = no_sync;
 }
 
 static void update_opts(void *p)
@@ -1145,6 +1155,38 @@ static void record_present(struct vo_internal *in, struct present_record present
 #define SLEEP_SLACK_NS 0
 #endif
 
+// The time on the timeline of the video that a draw of the frame stands for,
+// as an offset to the pts of the frame, for --sub-animation-fps. Display sync
+// puts a frame on the vsyncs around its time and knows where between the
+// frames every one of them is, the interpolation mixes the frames by it.
+// Subtitles animated at that time advance by the same amount on every vsync,
+// and stay on the video through speed changes, dropped and repeated vsyncs and
+// whatever a filter does to the frame times, as no clock is involved. A timed
+// frame is drawn once, for its own time.
+static double get_sub_anim_offset(struct vo *vo, struct vo_frame *frame)
+{
+    int fps = vo->opts->sub_animation_fps;
+    if (!fps || !frame->current || !frame->display_synced || frame->still)
+        return 0;
+
+    // Video time per vsync.
+    double step = frame->ideal_frame_vsync_duration;
+    double offset = frame->ideal_frame_vsync;
+    // The timing of a frame without a known duration is garbage.
+    if (!isfinite(offset) || !isfinite(step) || step <= 0)
+        return 0;
+    offset = MPCLAMP(offset, -step, frame->approx_duration + step);
+
+    // A rate below the refresh rate takes the time from a grid of that rate.
+    double display_fps = 1e9 / vo->in->vsync_interval;
+    if (fps > 0 && fps * 1.01 < display_fps) {
+        double grid = step * display_fps / fps;
+        double pts = frame->current->pts + offset;
+        offset = rint(pts / grid) * grid - frame->current->pts;
+    }
+    return offset;
+}
+
 static void wait_until(int64_t target, bool exact)
 {
     mp_sleep_ns(target - (exact ? SLEEP_SLACK_NS : 0) - mp_time_ns());
@@ -1179,6 +1221,10 @@ static bool render_frame(struct vo *vo)
 
     frame = vo_frame_ref(in->current_frame);
     mp_assert(frame);
+
+    // A redraw of the frame keeps the time of its last draw.
+    frame->sub_anim_offset = in->current_frame->sub_anim_offset =
+        get_sub_anim_offset(vo, frame);
 
     if (frame->display_synced) {
         frame->pts = 0;

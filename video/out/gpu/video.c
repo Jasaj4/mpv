@@ -3665,6 +3665,13 @@ done:
         if (!(flags & RENDER_FRAME_OSD))
             osd_flags |= OSD_DRAW_SUB_ONLY;
 
+        // Each draw of a frame stands for another moment of the video, the
+        // subtitle animations are rendered at it (--sub-animation-fps).
+        if (has_frame) {
+            osd_set_sub_anim_pts(p->osd_state, p->osd_pts,
+                                 p->osd_pts + frame->sub_anim_offset);
+        }
+
         pass_draw_osd(p, osd_flags, flags, p->osd_pts, p->osd_rect, fbo, true);
         debug_check_gl(p, "after OSD rendering");
     }

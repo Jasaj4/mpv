@@ -419,12 +419,15 @@ void sub_redecode_cached_packets(struct dec_sub *sub)
 }
 
 // Unref sub_bitmaps.rc to free the result. May return NULL.
+// The subtitles are the ones shown at pts. anim_pts is the time their
+// animations are rendered at, a decoder without those ignores it.
 struct sub_bitmaps *sub_get_bitmaps(struct dec_sub *sub, struct mp_osd_res dim,
-                                    int format, double pts)
+                                    int format, double pts, double anim_pts)
 {
     mp_mutex_lock(&sub->lock);
 
     pts = pts_to_subtitle(sub, pts);
+    anim_pts = pts_to_subtitle(sub, anim_pts);
 
     sub->last_vo_pts = pts;
     update_segment(sub);
@@ -433,7 +436,10 @@ struct sub_bitmaps *sub_get_bitmaps(struct dec_sub *sub, struct mp_osd_res dim,
 
     if (!(sub->end != MP_NOPTS_VALUE && pts >= sub->end) &&
         sub->sd->driver->get_bitmaps)
+    {
+        sub->sd->anim_pts = anim_pts;
         res = sub->sd->driver->get_bitmaps(sub->sd, dim, format, pts);
+    }
 
     mp_mutex_unlock(&sub->lock);
     return res;
