@@ -3,6 +3,7 @@
 # mpv
 
 
+* [About this fork](#about-this-fork)
 * [External links](#external-links)
 * [Overview](#overview)
 * [System requirements](#system-requirements)
@@ -14,6 +15,95 @@
 * [Contributing](#contributing)
 * [License](#license)
 * [Contact](#contact)
+
+
+## About this fork
+
+
+This is a personal fork of [mpv](https://github.com/mpv-player/mpv) for watching
+video with **animated ASS/SSA subtitles that move at the refresh rate of the
+display**, such as scrolling comments (danmaku), moving signs and karaoke. It is
+not intended to be merged upstream; it is kept in sync with upstream `master`
+and these changes are rebased/re-applied on top.
+
+### What it adds
+
+**1. `--sub-animation-fps`: subtitle animations on every refresh of the display**
+
+Upstream mpv renders subtitles once per video frame, for the time of that frame.
+An animated subtitle (`\move`, `\t`, `\fad`, karaoke, ...) therefore advances at
+the frame rate of the video, which looks choppy with 24 or 30 fps video on a
+display that refreshes faster.
+
+```text
+--sub-animation-fps=no        # disabled (default; upstream behavior)
+--sub-animation-fps=display   # animate on every refresh of the display
+--sub-animation-fps=30        # animate at most this many times per second
+```
+
+It requires a display synced `--video-sync` mode (e.g. `display-resample`), the
+same as `--interpolation`. It applies to ASS/SSA subtitles drawn by `--vo=gpu`,
+`--vo=gpu-next` and the libmpv render API (cocoa-cb on macOS), and has no effect
+with `--blend-subtitles`. See `--sub-animation-fps` in the manual.
+
+**2. Playback speed changes without a hitch (display synced modes)**
+
+When the playback speed changes, the audio that is already buffered by the audio
+output keeps playing at the old speed for a moment (0.2 s by default). Upstream
+changes the speed of the video at once and then repairs the resulting A/V
+difference in one go: the video stands still after speeding up, and skips ahead
+after slowing down. Here the video changes its speed at the moment the audio of
+the new speed is heard, so audio and video stay in sync through the change and
+nothing has to be repaired.
+
+### How it works
+
+Subtitle animations:
+
+* In the display synced modes every video frame is put on the vsyncs around its
+  time, and the player knows where between the video frames each vsync is: it is
+  what `--interpolation` mixes the frames by. The VO passes that position along
+  with every draw of a frame (`vo_frame.sub_anim_offset`, `video/out/vo.c`).
+  No clock, timer or extra redraw is involved, so the animation advances by
+  exactly the same amount on every vsync, and follows the video through speed
+  changes, dropped or repeated vsyncs and filters that change the frame timing
+  (inverse telecine, deinterlacing).
+* The renderers hand the time to the OSD before they draw it
+  (`osd_set_sub_anim_pts()`; `video/out/gpu_next/video.c`,
+  `video/out/gpu/video.c`), from where it reaches the subtitle decoder
+  (`sub/osd.c`, `sub/dec_sub.c`).
+* Which subtitle events are shown is still decided by the time of the video
+  frame alone, only the animation within an event uses the finer time. libass
+  takes a single time for both, so the frame is rendered at the animation time
+  and the few events the two times disagree about have their start moved for
+  the call (`render_frame()` in `sub/sd_ass.c`). An event therefore appears and
+  disappears on exactly the video frame it was timed to, as upstream.
+
+Playback speed changes:
+
+* Every audio frame knows the speed it was made at. Where that speed jumps in
+  the audio written to the audio output is remembered until it has played
+  (`player/audio.c`). With that, the position of the audio that is heard is
+  known through a speed change (`playing_audio_pts()`), and so is the speed it
+  plays at (`playing_speed_after()`).
+* Display sync shows each video frame at the speed of the audio heard with it
+  (`handle_display_sync_frame()` in `player/video.c`).
+
+### Files changed vs upstream
+
+`options/options.{c,h}`, `video/out/vo.{c,h}`, `video/out/gpu_next/video.c`,
+`video/out/gpu/video.c`, `sub/osd.{c,h}`, `sub/osd_state.h`,
+`sub/dec_sub.{c,h}`, `sub/sd.h`, `sub/sd_ass.c`, `player/audio.c`,
+`player/video.c`, `player/core.h`, `DOCS/man/options.rst`, `common/meson.build`
+(version suffix).
+
+### Syncing with upstream
+
+```sh
+git remote add upstream https://github.com/mpv-player/mpv.git   # once
+git fetch upstream
+git rebase upstream/master      # re-apply the fork commits on top
+```
 
 
 ## External links
