@@ -203,6 +203,17 @@ struct ao_chain {
     bool out_eof;
     double last_out_pts;
 
+    // Changes of the playback speed within the audio that is written to the
+    // AO but not played yet, oldest first. See audio_pts_before_end().
+    struct audio_speed_change {
+        double pts;         // the audio before this pts was written
+        double speed;       //  at this speed,
+        double user_speed;  //  for this --speed
+    } speed_changes[8];
+    int num_speed_changes;
+    double written_speed;       // speed of the last frame written, 0 if none
+    double written_user_speed;  // the --speed that frame was made for
+
     double start_pts;
     bool start_pts_known;
 
@@ -521,6 +532,9 @@ void uninit_audio_decoder(struct MPContext *mpctx);
 void reinit_audio_decoder(struct MPContext *mpctx);
 int reinit_audio_filters(struct MPContext *mpctx);
 double playing_audio_pts(struct MPContext *mpctx);
+double playing_audio_pts_after(struct MPContext *mpctx, double time);
+bool playing_speed_after(struct MPContext *mpctx, double time, double duration,
+                         double *speed);
 void fill_audio_out_buffers(struct MPContext *mpctx);
 double written_audio_pts(struct MPContext *mpctx);
 void clear_audio_output_buffers(struct MPContext *mpctx);

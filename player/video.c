@@ -758,7 +758,7 @@ static double calc_best_speed(double vsync, double frame,
     return -1;
 }
 
-static double find_best_speed(struct MPContext *mpctx, double vsync)
+static double find_best_speed(struct MPContext *mpctx, double vsync, double speed)
 {
     double total = 0;
     int num = 0;
@@ -766,7 +766,7 @@ static double find_best_speed(struct MPContext *mpctx, double vsync)
         double dur = mpctx->past_frames[n].approx_duration;
         if (dur <= 0)
             continue;
-        double best = calc_best_speed(vsync, dur / mpctx->opts->playback_speed,
+        double best = calc_best_speed(vsync, dur / speed,
                                  mpctx->opts->sync_max_video_change / 100,
                                  mpctx->opts->sync_max_factor);
         if (best <= 0)
@@ -859,7 +859,6 @@ static void adjust_audio_drift_compensation(struct MPContext *mpctx, double dura
 static void handle_display_sync_frame(struct MPContext *mpctx,
                                       struct vo_frame *frame)
 {
-    struct MPOpts *opts = mpctx->opts;
     struct vo *vo = mpctx->video_out;
     int mode = vo->opts->video_sync;
 
@@ -876,9 +875,22 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
         mpctx->video_status < STATUS_PLAYING)
         return;
 
-    if (opts->playback_speed != mpctx->display_sync_speed) {
+    // The time until the frame is shown. The first display synced frame is
+    // shown at its target time, time_frame from now.
+    double time_left = sync_start ? MPMAX(mpctx->time_frame, 0) : vo_get_delay(vo);
+
+    double approx_duration = MPMAX(0, mpctx->past_frames[0].approx_duration);
+
+    // The speed the frame is shown at is the one of the audio heard with it,
+    // so a change of the playback speed takes effect once the audio written
+    // before it has played. The frame it happens in gets some of both speeds.
+    double speed;
+    bool speed_changes = playing_speed_after(mpctx, isnan(time_left) ? 0 : time_left,
+                                             approx_duration, &speed);
+
+    if (!speed_changes && speed != mpctx->display_sync_speed) {
         mpctx->display_sync_error = 0.0;
-        mpctx->display_sync_speed = opts->playback_speed;
+        mpctx->display_sync_speed = speed;
     }
 
     bool resample = mode == VS_DISP_RESAMPLE || mode == VS_DISP_RESAMPLE_VDROP ||
@@ -895,14 +907,17 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
     if (vsync <= 0)
         return;
 
-    double approx_duration = MPMAX(0, mpctx->past_frames[0].approx_duration);
-    double adjusted_duration = approx_duration / opts->playback_speed;
+    double adjusted_duration = approx_duration / speed;
     if (adjusted_duration > 0.5)
         return;
 
-    mpctx->speed_factor_v = 1.0;
-    if (mode != VS_DISP_VDROP)
-        mpctx->speed_factor_v = find_best_speed(mpctx, vsync);
+    // A frame with some of two speeds has no rate to fit to the display, and
+    // a factor of its own would only disturb the audio that is resampled by it.
+    if (!speed_changes) {
+        mpctx->speed_factor_v = 1.0;
+        if (mode != VS_DISP_VDROP)
+            mpctx->speed_factor_v = find_best_speed(mpctx, vsync, speed);
+    }
 
     // Determine for how many vsyncs a frame should be displayed. This can be
     // e.g. 2 for 30hz on a 60hz display. It can also be 0 if the video
@@ -922,11 +937,6 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
     double av_diff = mpctx->last_av_difference;
     MP_STATS(mpctx, "value %f avdiff", av_diff);
 
-    // Estimate the video position, so we can calculate a good A/V difference
-    // value below. This is used to estimate A/V drift. The first display
-    // synced frame is shown at its target time, time_frame from now.
-    double time_left = sync_start ? MPMAX(mpctx->time_frame, 0) : vo_get_delay(vo);
-
     // Intended number of additional display frames to drop (<0) or repeat (>0)
     int drop_repeat = 0;
 
@@ -934,7 +944,7 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
     // Tolerate some desync to avoid frame dropping due to jitter. Without
     // display timing the difference is stale, and only a shown frame brings
     // the timing back.
-    av_diff /= opts->playback_speed;
+    av_diff /= speed;
     if (drop && !isnan(time_left) && fabs(av_diff) >= 0.020 &&
         fabs(av_diff) / vsync >= 1)
         drop_repeat = -av_diff / vsync; // round towards 0
@@ -963,9 +973,14 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
 
     mpctx->total_avsync_change = 0;
     // Without display timing it is unknown when the frame will be displayed,
-    // keep the last A/V difference.
-    if (!isnan(time_left))
-        update_av_diff(mpctx, time_left * opts->playback_speed);
+    // keep the last A/V difference. The audio plays on until the frame is
+    // shown, at the speeds it was written at.
+    if (!isnan(time_left)) {
+        double a_pos = playing_audio_pts(mpctx);
+        double a_then = playing_audio_pts_after(mpctx, time_left);
+        update_av_diff(mpctx, a_pos != MP_NOPTS_VALUE ? a_then - a_pos
+                                                      : time_left * speed);
+    }
 
     mpctx->past_frames[0].num_vsyncs = num_vsyncs;
 

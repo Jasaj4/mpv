@@ -219,6 +219,8 @@ static bool has_video_track(struct MPContext *mpctx)
 static void ao_chain_reset_state(struct ao_chain *ao_c)
 {
     ao_c->last_out_pts = MP_NOPTS_VALUE;
+    ao_c->num_speed_changes = 0;
+    ao_c->written_speed = 0;
     ao_c->out_eof = false;
     ao_c->start_pts_known = false;
     ao_c->start_pts = MP_NOPTS_VALUE;
@@ -654,6 +656,109 @@ double written_audio_pts(struct MPContext *mpctx)
     return mpctx->ao_chain ? mpctx->ao_chain->last_out_pts : MP_NOPTS_VALUE;
 }
 
+// The audio written to the AO plays at the speed it was written at, a change
+// of the playback speed is heard only once everything written before it has
+// played. Until then the AO holds audio of two speeds, and a position in it is
+// not simply its delay times the speed away from the end.
+// A frame knows the speed it was made at. Where that speed jumps between two
+// frames is remembered, along with the --speed either side was made for.
+static void note_written_speed(struct MPContext *mpctx, struct mp_aframe *af)
+{
+    struct ao_chain *ao_c = mpctx->ao_chain;
+    double speed = mp_aframe_get_speed(af);
+    if (!(speed > 0))
+        return;
+
+    // The filters take a moment to follow a new --speed, a frame can still be
+    // one of the old speed.
+    double user_speed = mpctx->opts->playback_speed;
+    bool is_current = fabs(speed / mpctx->audio_speed - 1) < 0.02;
+    if (!is_current && ao_c->written_speed > 0)
+        user_speed = ao_c->written_user_speed;
+
+    // The speed drifts by tiny amounts all the time to keep the audio in sync,
+    // only a real change counts.
+    if (ao_c->written_speed > 0 && fabs(speed / ao_c->written_speed - 1) >= 0.02) {
+        double pts = mp_aframe_get_pts(af);
+        if (pts == MP_NOPTS_VALUE)
+            pts = ao_c->last_out_pts;
+        int max = MP_ARRAY_SIZE(ao_c->speed_changes);
+        if (ao_c->num_speed_changes == max) {
+            memmove(&ao_c->speed_changes[0], &ao_c->speed_changes[1],
+                    (max - 1) * sizeof(ao_c->speed_changes[0]));
+            ao_c->num_speed_changes--;
+        }
+        if (pts != MP_NOPTS_VALUE) {
+            ao_c->speed_changes[ao_c->num_speed_changes++] =
+                (struct audio_speed_change){
+                    .pts = pts,
+                    .speed = ao_c->written_speed,
+                    .user_speed = ao_c->written_user_speed,
+                };
+        }
+    }
+
+    ao_c->written_speed = speed;
+    ao_c->written_user_speed = user_speed;
+}
+
+// Go back from the end of the audio written to the AO by the given time, in
+// seconds of audio output, and return the pts found there. This crosses the
+// speed changes that are not played yet. A time below 0 is audio that is not
+// written yet. If user_speed is set, it gets the --speed the audio there was
+// made for, and change gets the time it takes from there until audio of
+// another --speed plays, next_speed, or INFINITY if there is none.
+// With forget set, the changes that lie before the position are dropped.
+static double audio_pts_before_end(struct MPContext *mpctx, double time,
+                                   double *user_speed, double *change,
+                                   double *next_speed, bool forget)
+{
+    struct ao_chain *ao_c = mpctx->ao_chain;
+    double pts = ao_c->last_out_pts;
+    double speed = mpctx->audio_speed;
+    double user = mpctx->opts->playback_speed;
+    // Where the --speed changes next, as time before the end, if at all.
+    double change_at = -1;
+    double change_to = user;
+    // The part of the time that is not in the audio looked at.
+    double left = time;
+
+    if (time > 0 && ao_c->written_speed > 0) {
+        speed = ao_c->written_speed;
+        user = ao_c->written_user_speed;
+        // The audio that is written next is of the current --speed.
+        if (user != change_to)
+            change_at = 0;
+        for (int n = ao_c->num_speed_changes - 1; n >= 0; n--) {
+            struct audio_speed_change *c = &ao_c->speed_changes[n];
+            double length = MPMAX(pts - c->pts, 0) / speed;
+            if (left <= length) {
+                if (forget) {
+                    ao_c->num_speed_changes -= n + 1;
+                    memmove(&ao_c->speed_changes[0], &ao_c->speed_changes[n + 1],
+                            ao_c->num_speed_changes * sizeof(ao_c->speed_changes[0]));
+                }
+                break;
+            }
+            left -= length;
+            if (c->user_speed != user) {
+                change_at = time - left;
+                change_to = user;
+            }
+            pts = c->pts;
+            speed = c->speed;
+            user = c->user_speed;
+        }
+    }
+
+    if (user_speed) {
+        *user_speed = user;
+        *change = change_at >= 0 ? time - change_at : INFINITY;
+        *next_speed = change_to;
+    }
+    return pts - left * speed;
+}
+
 // Return pts value corresponding to currently playing audio adjusted for AO delay
 // and playback speed.
 double playing_audio_pts(struct MPContext *mpctx)
@@ -661,7 +766,43 @@ double playing_audio_pts(struct MPContext *mpctx)
     double pts = written_audio_pts(mpctx);
     if (pts == MP_NOPTS_VALUE || !mpctx->ao)
         return pts;
-    return pts - mpctx->audio_speed * ao_get_delay(mpctx->ao);
+    return audio_pts_before_end(mpctx, ao_get_delay(mpctx->ao), NULL, NULL, NULL, true);
+}
+
+// Like playing_audio_pts(), but for the audio that plays the given time from
+// now, in seconds.
+double playing_audio_pts_after(struct MPContext *mpctx, double time)
+{
+    double pts = written_audio_pts(mpctx);
+    if (pts == MP_NOPTS_VALUE || !mpctx->ao)
+        return pts;
+    return audio_pts_before_end(mpctx, ao_get_delay(mpctx->ao) - time,
+                                NULL, NULL, NULL, false);
+}
+
+// The speed that the given duration of the file plays at, starting the given
+// time from now, as far as the --speed goes. The audio written to the AO
+// before a change of the speed still plays at the old speed, and that is the
+// speed of what is seen as well: video that changes its speed at once is ahead
+// or behind by all the AO buffers when the new speed is heard. Without audio
+// it is the playback speed.
+// Returns whether the speed changes within the duration, *speed is then the
+// mean of the two.
+bool playing_speed_after(struct MPContext *mpctx, double time, double duration,
+                         double *speed)
+{
+    *speed = mpctx->opts->playback_speed;
+    if (mpctx->audio_status != STATUS_PLAYING || !mpctx->ao || !mpctx->ao_chain ||
+        written_audio_pts(mpctx) == MP_NOPTS_VALUE || ao_untimed(mpctx->ao))
+        return false;
+
+    double change, next_speed;
+    audio_pts_before_end(mpctx, ao_get_delay(mpctx->ao) - time,
+                         speed, &change, &next_speed, false);
+    if (change * *speed >= duration)
+        return false;
+    *speed = duration / (change + (duration - change * *speed) / next_speed);
+    return true;
 }
 
 // This garbage is needed for untimed AOs. These consume audio infinitely fast,
@@ -755,6 +896,7 @@ static void ao_process(struct mp_filter *f)
         double real_samplerate = mp_aframe_get_rate(af) / mpctx->audio_speed;
         if (mpctx->video_status != STATUS_EOF)
             mpctx->delay += samples / real_samplerate;
+        note_written_speed(mpctx, af);
         ao_c->last_out_pts = mp_aframe_end_pts(af);
         update_throttle(mpctx);
 

@@ -8391,6 +8391,13 @@ Video Sync
     mode will display them after the renderer has resumed (typically resulting
     in a short A/V desync and the video "catching up").
 
+    In the display-sync modes, a change of the playback speed (``--speed``)
+    takes effect on the video at the moment the audio of the new speed is
+    heard. That is later than the change by what the audio output buffers (see
+    ``--audio-buffer``), as the audio that is buffered already still plays at
+    the old speed. Audio and video stay in sync through the change, and the
+    video does not have to stand still or skip ahead to make up for it.
+
     These modes also require a vsync blocked presentation mode. For OpenGL, this
     translates to ``--opengl-swapinterval=1``. For Vulkan, it translates to
     ``--vulkan-swap-mode=fifo`` (or ``fifo-relaxed``).
